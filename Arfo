@@ -1,0 +1,30 @@
+cat > /tmp/cvs-2-app.yaml <<'EOF'
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: cvs-2
+  namespace: argocd
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/cessda/cessda.cvs.deploy-safespring.git
+    targetRevision: main
+    path: cvs
+    helm:
+      releaseName: cvs-2
+      parameters:
+        - name: es.imageRepository
+          value: ghcr.io/cessda/elasticsearch
+        - name: es.version
+          value: 7.17.15-icu
+        - name: frontend.image.repository
+          value: ghcr.io/cessda/cvs-frontend
+        - name: frontend.image.tag
+          value: main-30
+  destination:
+    name: cessda-svc
+    namespace: cvs-2
+EOF
+kubectl apply -f /tmp/cvs-2-app.yaml
+sleep 20
+kubectl get application cvs-2 -n argocd
