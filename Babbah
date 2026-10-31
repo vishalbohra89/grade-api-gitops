@@ -1,0 +1,1 @@
+GIT_SSH_COMMAND="ssh -i /tmp/argocd-deploy -o IdentitiesOnly=yes" git ls-remote git@github.com:cessda/cessda.cvs.deploy-safespring.git
