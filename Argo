@@ -1,0 +1,24 @@
+SVC=$(grep "server:" /Users/vishalbohra/jenkins-deployer.yaml | awk '{print $2}')
+echo $SVC
+
+kubectl run nettest -n argocd --rm -it --image=curlimages/curl --restart=Never -- curl -sk -m 10 "$SVC/version"
+
+TOKEN=$(KUBECONFIG=/Users/vishalbohra/jenkins-deployer.yaml kubectl -n kube-system get secret argocd-manager-long-lived-token -o jsonpath='{.data.token}' | base64 -d)
+CA=$(KUBECONFIG=/Users/vishalbohra/jenkins-deployer.yaml kubectl -n kube-system get secret argocd-manager-long-lived-token -o jsonpath='{.data.ca\.crt}')
+
+kubectl -n argocd apply -f - <<EOF
+apiVersion: v1
+kind: Secret
+metadata:
+  name: cluster-cessda-svc
+  labels:
+    argocd.argoproj.io/secret-type: cluster
+stringData:
+  name: cessda-svc
+  server: $SVC
+  config: |
+    {"bearerToken": "$TOKEN", "tlsClientConfig": {"insecure": false, "caData": "$CA"}}
+EOF
+
+argocd cluster list --grpc-web
+
