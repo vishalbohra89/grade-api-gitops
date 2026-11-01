@@ -1,0 +1,681 @@
+cat deployment.yaml 
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "frontend.fullname" . }}
+  labels:
+    {{- include "frontend.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.replicaCount }}
+  selector:
+    matchLabels:
+      app: cvs
+      {{- include "frontend.selectorLabels" . | nindent 6 }}
+  {{/* serviceName: include "frontend.fullname" . */}}
+  template:
+    metadata:
+      labels:
+        app: cvs
+        {{- include "frontend.selectorLabels" . | nindent 8 }}
+    spec:
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+
+      serviceAccountName: {{ include "frontend.serviceAccountName" . }}
+
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+
+      initContainers:
+        {{- if not .Values.sql.proxy.enabled }}
+        - name: init-ds
+          image: busybox:latest
+          command:
+            - /bin/sh
+            - -c
+            - |
+              while true
+              do
+                rt=$(nc -z -w 1  cvs-2-mysql 3306)
+                if [ $? -eq 0 ]; then
+                  echo "DB is UP"
+                  break
+                fi
+                echo "DB is not yet reachable; sleep for 10s before retry"
+                sleep 10
+              done
+        {{- end }}
+
+      containers:
+        - name: {{ .Chart.Name }}
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+
+          env:
+          {{- if .Values.logging.level }}
+            - name: LOGGING_LEVEL_ROOT
+              value: {{ .Values.logging.level | quote }}
+          {{- end }}
+            - name: LOGGING_LEVEL_ORG_HIBERNATE_ENGINE_JDBC_CONNECTION_ACCESS
+              value: "DEBUG"
+            - name: LOGGING_LEVEL_COM_ZAXXER_HIKARI
+              value: "DEBUG"
+            - name: LOGGING_LEVEL_ORG_SPRINGFRAMEWORK_JDBC
+              value: "DEBUG"
+            - name: SPRING_JPA_SHOW_SQL
+              value: "true"
+            - name: SPRING_PROFILES_ACTIVE
+              value: prod
+
+            - name: JHIPSTER_SECURITY_AUTHENTICATION_JWT_BASE64_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: jwt-secret
+                  key: secret
+
+            - name: SPRING_DATASOURCE_URL
+              value: "jdbc:mysql://cvs-2-mysql:3306/cvs?useUnicode=true&characterEncoding=utf8&useSSL=false&createDatabaseIfNotExist=true&allowPublicKeyRetrieval=true"
+
+            - name: SPRING_DATASOURCE_USERNAME
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Release.Name }}-mysql-secret
+                  key: username
+
+            - name: SPRING_DATASOURCE_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Release.Name }}-mysql-secret
+                  key: password
+
+            - name: SPRING_ELASTICSEARCH_REST_URIS
+              value: "http://{{ .Release.Name }}-es-eck-elasticsearch-es-http.{{ .Release.Namespace }}.svc.cluster.local:9200"
+
+            - name: SPRING_ELASTICSEARCH_REST_USERNAME
+              value: elastic
+
+            - name: SPRING_ELASTICSEARCH_REST_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Release.Name }}-es-eck-elasticsearch-es-elastic-user
+                  key: elastic
+
+            - name: SPRING_OUTPUT_ANSI_ENABLED
+              value: "NEVER"
+
+            - name: JAVA_TOOL_OPTIONS
+              value: "{{ .Values.javaOpts }}"
+
+            - name: JHIPSTER_LOGGING_USE_JSON_FORMAT
+              value: "true"
+
+            {{- if .Values.mail.enabled }}
+            - name: JHIPSTER_MAIL_BASE_URL
+              value: {{ .Values.mail.baseURL | quote }}
+
+            - name: SPRING_MAIL_HOST
+              value: "{{ .Release.Name }}-mailrelay"
+
+            - name: SPRING_MAIL_PORT
+              value: "25"
+            {{- end }}
+
+            {{- if .Values.prometheus.enabled }}
+            - name: MANAGEMENT_METRICS_EXPORT_PROMETHEUS_ENABLED
+              value: "true"
+            {{- end }}
+
+            - name: APPLICATION_STATIC_FILE_PATH
+              value: /opt/cvs/resources/
+
+          ports:
+            - name: http
+              containerPort: 8080
+              protocol: TCP
+
+          livenessProbe:
+            httpGet:
+              path: /management/health
+              port: http
+            initialDelaySeconds: 300
+            periodSeconds: 15
+            failureThreshold: 6
+
+          readinessProbe:
+            httpGet:
+              path: /management/health
+              port: http
+
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+
+          volumeMounts:
+            - name: cvs-storage
+              mountPath: /opt/cvs/resources/
+
+      volumes:
+        - name: cvs-storage
+          emptyDir: {}
+
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+
+
+
+
+
+def product_name = 'cvs-2'
+
+pipeline {
+
+    options {
+        disableConcurrentBuilds()
+    }
+
+    parameters {
+        string(
+            name: 'FRONTEND_IMAGE_TAG',
+            defaultValue: '',
+            description: 'Tag of the cvs-frontend image to deploy, pushed by cessda.cvs.two'
+        )
+    }
+
+    environment {
+        // Elasticsearch
+        ES_BASE_VERSION = '7.17.15'
+        ES_IMAGE_REPO   = 'ghcr.io/cessda/elasticsearch'
+        ES_IMAGE_TAG    = '7.17.15-icu'
+
+        // SafeSpring Kubernetes
+        SAFE_CLUSTER = 'safespring-service-cluster'
+
+        // Application images
+        FRONTEND_IMAGE_REPO    = 'ghcr.io/cessda/cvs-frontend'
+        CONTENTGUIDE_IMAGE_TAG = 'production-51'
+        USERGUIDE_IMAGE_TAG    = 'production-51'
+    }
+
+    agent {
+        kubernetes {
+            yaml '''
+apiVersion: v1
+kind: Pod
+spec:
+  serviceAccountName: jenkins
+
+  imagePullSecrets:
+    - name: ghcr-secret
+    - name: ghcr-pull-secret
+
+  containers:
+
+    - name: builder
+      image: ghcr.io/cessda/jenkins-agent:1.1
+      imagePullPolicy: Always
+      command:
+        - cat
+      tty: true
+      securityContext:
+        runAsUser: 0
+
+    - name: gcloud
+      image: google/cloud-sdk:slim
+      imagePullPolicy: Always
+      command:
+        - cat
+      tty: true
+
+    # ============================================================
+    # Docker CLI
+    # ============================================================
+
+    - name: docker
+      image: docker:27-cli
+      imagePullPolicy: IfNotPresent
+      command:
+        - cat
+      tty: true
+      env:
+        - name: DOCKER_HOST
+          value: tcp://127.0.0.1:2375
+
+    # ============================================================
+    # Docker-in-Docker daemon
+    # ============================================================
+
+    - name: dind
+      image: docker:27-dind
+      imagePullPolicy: IfNotPresent
+
+      securityContext:
+        privileged: true
+
+      env:
+        - name: DOCKER_TLS_CERTDIR
+          value: ""
+
+      command:
+        - dockerd
+
+      args:
+        - --host=tcp://0.0.0.0:2375
+        - --host=unix:///var/run/docker.sock
+'''
+        }
+    }
+
+    stages {
+
+        /*
+         * ---------------------------------------------------------
+         * 1. Debug Jenkins environment
+         * ---------------------------------------------------------
+         */
+        stage('Debug Jenkins Environment') {
+            steps {
+                sh '''
+                    echo "================================"
+                    echo "BRANCH_NAME        = ${BRANCH_NAME}"
+                    echo "GIT_BRANCH         = ${GIT_BRANCH}"
+                    echo "JOB_NAME           = ${JOB_NAME}"
+                    echo "BUILD_NUMBER       = ${BUILD_NUMBER}"
+                    echo "FRONTEND_IMAGE_TAG = ${FRONTEND_IMAGE_TAG}"
+                    echo "================================"
+                '''
+            }
+        }
+
+
+        /*
+         * ---------------------------------------------------------
+         * 2. Authenticate with GCP
+         * ---------------------------------------------------------
+         */
+        stage('Set up gcloud') {
+            steps {
+                container('gcloud') {
+                    withCredentials([
+                        file(
+                            credentialsId: 'cvs-safespring-jenkins-key',
+                            variable: 'GOOGLE_APPLICATION_CREDENTIALS'
+                        )
+                    ]) {
+                        sh '''
+                            set -e
+
+                            echo "=== GCloud setup ==="
+
+                            gcloud --version
+
+                            gcloud auth activate-service-account \
+                                --key-file="${GOOGLE_APPLICATION_CREDENTIALS}"
+
+                            gcloud config set project cessda-prod
+
+                            gcloud auth configure-docker \
+                                europe-west1-docker.pkg.dev \
+                                --quiet
+
+                            echo "Authenticated GCP account:"
+                            gcloud auth list
+
+                            echo "GCP project:"
+                            gcloud config get-value project
+                        '''
+                    }
+                }
+            }
+        }
+
+
+        /*
+         * ---------------------------------------------------------
+         * 3. Wait for Docker-in-Docker
+         * ---------------------------------------------------------
+         */
+        stage('Wait for Docker Daemon') {
+            steps {
+                container('docker') {
+                    sh '''
+                        set -eu
+
+                        echo "========================================"
+                        echo "WAITING FOR DOCKER-IN-DOCKER"
+                        echo "========================================"
+
+                        echo "DOCKER_HOST=$DOCKER_HOST"
+
+                        for i in $(seq 1 60); do
+
+                            if docker info > /tmp/docker-info 2>&1; then
+
+                                echo ""
+                                echo "Docker daemon is ready."
+                                echo ""
+
+                                docker version
+
+                                exit 0
+                            fi
+
+                            echo "Docker daemon not ready..."
+                            echo "Attempt $i/60"
+
+                            if [ "$i" -eq 1 ] || [ $((i % 10)) -eq 0 ]; then
+                                echo ""
+                                echo "Docker diagnostic:"
+                                cat /tmp/docker-info || true
+                                echo ""
+                            fi
+
+                            sleep 2
+                        done
+
+                        echo ""
+                        echo "ERROR: Docker-in-Docker daemon did not start."
+                        echo ""
+
+                        cat /tmp/docker-info || true
+
+                        exit 1
+                    '''
+                }
+            }
+        }
+
+
+        /*
+         * ---------------------------------------------------------
+         * 4. Build and push Elasticsearch image to GHCR
+         * ---------------------------------------------------------
+         */
+        stage('Build Elasticsearch Docker Image') {
+            steps {
+                container('docker') {
+                    withCredentials([
+                        usernamePassword(
+                            credentialsId: 'ghcr-elasticsearch-push',
+                            usernameVariable: 'GHCR_USERNAME',
+                            passwordVariable: 'GHCR_TOKEN'
+                        )
+                    ]) {
+                        sh '''
+                            set -e
+
+                            echo "=== Building Elasticsearch image ==="
+
+                            echo "Repository: ${ES_IMAGE_REPO}"
+                            echo "Tag:        ${ES_IMAGE_TAG}"
+                            echo "Version:    ${ES_BASE_VERSION}"
+
+                            echo "========================================"
+                            echo "LOGIN TO GHCR"
+                            echo "========================================"
+
+                            echo "${GHCR_TOKEN}" | docker login ghcr.io \
+                                --username "${GHCR_USERNAME}" \
+                                --password-stdin
+
+                            echo ""
+                            echo "GHCR login successful."
+
+                            echo "========================================"
+                            echo "DOCKER BUILD"
+                            echo "========================================"
+
+                            docker build \
+                                --file "${WORKSPACE}/elasticsearch/docker/Dockerfile" \
+                                --build-arg ES_VERSION="${ES_BASE_VERSION}" \
+                                --tag "${ES_IMAGE_REPO}:${ES_IMAGE_TAG}" \
+                                "${WORKSPACE}/elasticsearch/docker"
+
+                            echo "========================================"
+                            echo "PUSHING IMAGE"
+                            echo "========================================"
+
+                            docker push "${ES_IMAGE_REPO}:${ES_IMAGE_TAG}"
+
+                            echo "Elasticsearch image successfully pushed:"
+                            echo "${ES_IMAGE_REPO}:${ES_IMAGE_TAG}"
+
+                            echo "========================================"
+                            echo "LOGOUT FROM GHCR"
+                            echo "========================================"
+
+                            docker logout ghcr.io || true
+                        '''
+                    }
+                }
+            }
+        }
+
+
+        /*
+         * ---------------------------------------------------------
+         * 5. Build Helm dependencies
+         * ---------------------------------------------------------
+         */
+        stage('Build Helm dependencies') {
+            steps {
+                container('builder') {
+                    withCredentials([
+                        file(
+                            credentialsId: 'cvs-safespring-jenkins-key',
+                            variable: 'GOOGLE_APPLICATION_CREDENTIALS'
+                        )
+                    ]) {
+                        sh '''
+                            set -e
+
+                            echo "=== Helm setup ==="
+
+                            helm version
+
+                            echo "Logging into Google Artifact Registry..."
+
+                            cat "${GOOGLE_APPLICATION_CREDENTIALS}" | \
+                                helm registry login \
+                                europe-west1-docker.pkg.dev \
+                                --username _json_key \
+                                --password-stdin
+
+                            echo "Building CVS Helm dependencies..."
+
+                            helm dependency build cvs
+
+                            echo "Building CVS documentation Helm dependencies..."
+
+                            helm dependency build cvs-doc
+
+                            echo "CVS charts:"
+                            ls -lah cvs/charts
+
+                            echo "CVS documentation charts:"
+                            ls -lah cvs-doc/charts || true
+                        '''
+                    }
+                }
+            }
+        }
+
+
+        /*
+         * ---------------------------------------------------------
+         * 6. Deploy CVS application
+         * ---------------------------------------------------------
+         */
+        stage('Deploy CVS') {
+            steps {
+                container('builder') {
+                    withCredentials([
+                        file(
+                            credentialsId: 'safespring-service-cluster',
+                            variable: 'KUBECONFIG'
+                        )
+                    ]) {
+                        sh '''
+                            set -e
+
+                            echo "=== Deploying CVS ==="
+
+                            echo "Cluster context:"
+                            kubectl config current-context
+
+                            echo "Expected cluster:"
+                            echo "${SAFE_CLUSTER}"
+
+                            test "$(kubectl config current-context)" = "${SAFE_CLUSTER}"
+
+                            echo "Kubernetes cluster:"
+                            kubectl cluster-info
+
+                            echo "Existing CVS namespace:"
+                            kubectl get namespace cvs || true
+
+                            echo "Deploying CVS Helm chart with frontend tag: ${FRONTEND_IMAGE_TAG}"
+
+                            helm upgrade --install cvs-2 ./cvs \
+                                --namespace cvs-2 \
+                                --create-namespace \
+                                --set es.imageRepository=ghcr.io/cessda/elasticsearch \
+                                --set es.version=7.17.15-icu \
+                                --set frontend.image.repository=ghcr.io/cessda/cvs-frontend \
+                                --set frontend.image.tag=main-30
+
+                            echo "CVS deployment completed."
+                        '''
+                    }
+                }
+            }
+        }
+
+
+        /*
+         * ---------------------------------------------------------
+         * 7. Deploy documentation
+         * ---------------------------------------------------------
+         */
+        stage('Deploy Documentation') {
+            steps {
+                container('builder') {
+                    withCredentials([
+                        file(
+                            credentialsId: 'safespring-service-cluster',
+                            variable: 'KUBECONFIG'
+                        )
+                    ]) {
+                        sh '''
+                            set -e
+
+                            echo "=== Deploying CVS Documentation ==="
+
+                            echo "Cluster context:"
+                            kubectl config current-context
+
+                            test "$(kubectl config current-context)" = "${SAFE_CLUSTER}"
+
+                            helm upgrade --install cvs-doc ./cvs-doc \
+                                --namespace cvs-2 \
+                                --create-namespace \
+                                --set contentguide.image.tag="${CONTENTGUIDE_IMAGE_TAG}" \
+                                --set userguide.image.tag="${USERGUIDE_IMAGE_TAG}"
+
+                            echo "CVS documentation deployment completed."
+                        '''
+                    }
+                }
+            }
+        }
+
+
+        /*
+         * ---------------------------------------------------------
+         * 8. Verify deployment
+         * ---------------------------------------------------------
+         */
+        stage('Verify CVS + Documentation') {
+            steps {
+                container('builder') {
+                    withCredentials([
+                        file(
+                            credentialsId: 'safespring-service-cluster',
+                            variable: 'KUBECONFIG'
+                        )
+                    ]) {
+                        sh '''
+                            set -e
+
+                            echo "=== Verifying SafeSpring deployment ==="
+
+                            kubectl config current-context
+
+                            test "$(kubectl config current-context)" = "${SAFE_CLUSTER}"
+
+                            echo "=== Deployments ==="
+                            kubectl get deployments -n cvs-2
+
+                            echo "=== Pods ==="
+                            kubectl get pods -n cvs-2
+
+                            echo "=== Services ==="
+                            kubectl get services -n cvs-2
+
+                            echo "=== StatefulSets ==="
+                            kubectl get statefulsets -n cvs-2
+
+                            echo "=== Elasticsearch ==="
+                            kubectl get elasticsearch -n cvs-2 || true
+
+                            echo "=== CVS frontend ==="
+                            kubectl rollout status \
+                                deployment/cvs-frontend \
+                                -n cvs \
+                                --timeout=5m || true
+
+                            echo "=== Content Guide ==="
+                            kubectl rollout status \
+                                deployment/cvs-doc-contentguide \
+                                -n cvs \
+                                --timeout=5m
+
+                            echo "=== User Guide ==="
+                            kubectl rollout status \
+                                deployment/cvs-doc-userguide \
+                                -n cvs \
+                                --timeout=5m
+
+                            echo "=== Deployment verification completed ==="
+                        '''
+                    }
+                }
+            }
+        }
+    }
+
+    post {
+        success {
+            echo 'SAFE SPRING DEPLOYMENT OK'
+        }
+
+        failure {
+            echo 'SAFE SPRING DEPLOYMENT FAILED'
+        }
+    }
+}
