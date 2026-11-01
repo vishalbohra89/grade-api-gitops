@@ -1,0 +1,4 @@
+kubectl patch application cvs-2 -n argocd --type merge -p '{"spec":{"source":{"repoURL":"git@github.com:cessda/cessda.cvs.deploy-safespring.git"}}}'
+kubectl annotate application cvs-2 -n argocd argocd.argoproj.io/refresh=hard --overwrite
+sleep 20
+kubectl get application cvs-2 -n argocd
