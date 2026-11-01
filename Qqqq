@@ -1,0 +1,5 @@
+cat > /tmp/argo-health.sh <<'EOF'
+kubectl get application cvs-2 -n argocd -o jsonpath='{range .status.resources[?(@.health.status!="Healthy")]}{.kind}/{.name}: {.health.status} {.health.message}{"\n"}{end}'
+EOF
+sh /tmp/argo-health.sh
+kubectl get application cvs-2 -n argocd -o jsonpath='{.status.sync.status} / {.status.health.status}{"\n"}'
