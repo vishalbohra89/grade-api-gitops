@@ -1,0 +1,28 @@
+Objective 2: Infrastructure and Safespring testing
+
+	•	Built and operate two Safespring clusters, cessda-mgmt and cessda-svc, on Talos, Cilium, ArgoCD, cert-manager and SOPS/age.
+	•	The CVS PoC is live at vocabularies-safespring.cessda.eu. I resolved the Elasticsearch TLS trust and ICU plugin issues (custom image), the Spring Boot profile problem, and the service/pod label mismatch.
+	•	A separate cvs-2 test deployment works end to end, with the 39 vocabularies imported and reindexed.
+	•	I fixed the mgmt outage caused by the NodePort/Cilium change, and found and fixed the stale cert-manager host alias that blocked certificate issuance.
+	•	Security monitoring: Prometheus rules for certificate expiry, Elasticsearch health and PVC capacity, plus email alerting for Jenkins failures. I also applied namespace-level Cilium policies and am working on gateway access restriction by IP.
+	•	Planning: I audited the GKE production cluster, wrote an implementation plan document, and evaluated registry options (Harbor, Zot, GHCR).
+	•	Still open: the four GCP-only CVS components, HA gaps, and the cvs namespace cert/Gateway deadlock.
+
+Objective 3: CI/CD in a reusable setup
+
+	•	The cvs-frontend pipeline now builds and pushes immutable tagged images (for example main-30) to GHCR and automatically triggers the deploy job.
+	•	I replaced Kaniko with Docker-in-Docker after the PodSecurity change, and built the jenkins-agent image.
+	•	The KPI dashboard runs GitHub Actions → GHCR → GitOps repo → ArgoCD.
+	•	I decided on the ArgoCD model: Jenkins commits image tags to per-environment values files, with auto-sync on staging and manual approval for prod.
+	•	The mgmt cluster is now built through a Jenkins pipeline.
+	•	Still open: CI for the contentguide and userguide images, and the Helm-managed MySQL migration.
+
+Objective 7: Internal IT processes and services
+
+	•	I'm updating the Technical Guidelines (docs.tech.cessda.eu) with the new CI/CD flow and the Safespring PoC. I'm also writing the ArgoCD runbook and the pipeline documentation.
+	•	I set up the Alertmanager email alerts through the existing no-reply@cessda.eu SMTP relay.
+	•	On secrets, I found plaintext credentials in a cvs-db-secret annotation and am moving to encrypted secrets with rotation.
+
+I have nothing on file about Main Office IT support or equipment, so please add that yourself. If it was minimal, say so briefly and explain that the infrastructure work took priority.
+
+Lead with outcomes and numbers where you can (clusters live, pipelines working, services migrated), and acknowledge the open items with a timeline rather than leaving them out. Do you want me to turn this into a draft reply?
