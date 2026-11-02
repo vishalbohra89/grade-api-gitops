@@ -1,0 +1,7 @@
+kubectl --kubeconfig SSVC get secret cvs-db-secret -n default \
+  -o go-template='{{range $k,$v := .data}}{{$k}}{{"\n"}}{{end}}'
+
+kubectl --kubeconfig SSVC get secret cvs-db-secret -n default \
+  -o jsonpath='{.metadata.labels}{"\n"}{.metadata.annotations}{"\n"}'
+
+kubectl --kubeconfig SSVC get pods,deploy,sts -A -o yaml | grep -n "cvs-db-secret"
