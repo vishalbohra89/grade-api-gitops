@@ -1,0 +1,62 @@
+ArgoCD fixes several problems you have already hit:
+
+	•	Git is the single source of truth. The MySQL StatefulSet, the Service selector mismatch (app: cvs-frontend vs the pod labels), and the hand-edited Gateway all came from manual kubectl changes that drifted from Git. With ArgoCD (and self-heal), the cluster always matches the repo.
+	•	No more wrong-tag deploys. The FRONTEND_IMAGE_TAG=latest incident that caused ImagePullBackOff can't happen when the tag is committed to values-*.yaml. What runs is always what Git says.
+	•	Easy rollback and audit. Revert a commit, or roll back in the UI. Git history shows who changed what and when, which is also good documentation for the tech guidelines.
+	•	Safer prod releases. Staging deploys automatically, and prod needs a person to click Sync. The UI shows the diff before you approve.
+	•	Less in Jenkins. Jenkins only builds, tests and pushes images. It doesn't need cluster credentials (gcloud auth, kubeconfig) for deploys, which is more secure and simpler to maintain.
+	•	Drift and health visibility. One dashboard shows Synced/OutOfSync and Healthy/Degraded for cvs, cvs-doc and the Gateway. This would have caught the accidental cvs namespace deletion quickly, and ArgoCD can recreate the resources.
+	•	Easier to repeat. Rebuilding an environment, adding the next one, or moving more components off GCP means pointing a new Application at the repo. This helps with the PoC goal of moving CVS off GCP.
+
+Honest trade-offs: it's one more component to run and secure, you need discipline to stop using kubectl apply by hand, and the MySQL StatefulSet must be brought into Helm first so ArgoCD can manage it.
+
+ArgoCD never applies or runs your Jenkinsfile. Jenkins runs the Jenkinsfile, and ArgoCD only applies Kubernetes manifests. The two connect through Git.
+
+Who does what
+
+Step	Tool	Reads
+Build, test, push image	Jenkins	Jenkinsfile
+Commit new image tag to Git	Jenkins	Jenkinsfile (last stage)
+Deploy to the cluster	ArgoCD	Helm chart + values-*.yaml
+
+How the Jenkinsfile leads to a deploy
+
+	1.	A push to main triggers Jenkins, which runs the Jenkinsfile stages.
+	2.	The last stage edits values-staging.yaml (for example image.tag: main-31) and pushes that commit to cessda.cvs.deploy-safespring.
+	3.	ArgoCD sees that commit, renders the chart with the new tag, and updates the Deployment. Kubernetes then pulls ghcr.io/cessda/cvs-frontend:main-31.
+
+So the Jenkinsfile never touches the cluster. It only changes a value in Git, and ArgoCD does the rest.
+
+What to change in the Jenkinsfile for this
+
+	•	Keep: build, test, Sonar, the Docker-in-Docker build, and the push to GHCR.
+	•	Remove: the helm upgrade, gcloud auth, and Deploy and Verify stages.
+	•	Add: a stage that clones the deploy repo, updates the tag (for example with yq), commits and pushes. It needs a Git credential with write access.
+
+Jenkins can also wait for ArgoCD to report Healthy (argocd app wait), but that's optional.
+
+Do you want me to write that "update image tag" stage for your Jenkinsfile?
+
+No. Connecting the repo only gives ArgoCD permission to read it. It doesn't deploy or discover anything until you create an Application.
+
+What ArgoCD does and doesn't do
+
+	•	It does not scan the cluster and adopt what is already running.
+	•	It only manages what's defined in Git for that Application (repo, branch, path, destination cluster and namespace).
+	•	It compares those rendered manifests with the cluster, and it knows about live resources only if they match something in Git.
+
+What happens when you create the Application
+
+	•	Resources that are in Git and already exist in the cluster (same name and namespace): ArgoCD adopts them and shows a diff if they differ. A sync overwrites the live version with Git.
+	•	Resources that are in Git but missing in the cluster: ArgoCD shows them as Missing and creates them on sync.
+	•	Resources running in the cluster but not in Git (for example the manual MySQL StatefulSet, Service and PVC): ArgoCD ignores them. They show up only if pruning is on and they carry ArgoCD's tracking label, which unmanaged resources won't have. So they are neither deleted nor managed.
+
+Next steps
+
+	1.	Create the Application: repo cessda.cvs.deploy-safespring, branch main, path cvs, destination the service cluster and namespace cvs (or cvs-2 for testing).
+	2.	Open it in the UI and check the diff for every resource before syncing. Don't enable auto-sync or prune yet.
+	3.	Sync manually once it looks right, then enable auto-sync on staging.
+
+Test first: cvs-2 is your test namespace. Point the Application there before you touch the real cvs namespace, given the earlier namespace deletion incident.
+
+Did you already create an Application, or only add the repo under Settings → Repositories?
